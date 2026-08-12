@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+backend/.env
+frontend/.env
+_bmad/custom/*.user.toml
+.DS_Store
+
+frontend/node_modules/
+frontend/dist/

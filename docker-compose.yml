@@ -1,0 +1,44 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      network: host
+    env_file:
+      - path: ./backend/.env
+        required: false
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      network: host
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: parsing
+      POSTGRES_PASSWORD: parsing
+      POSTGRES_DB: parsing
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parsing"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
