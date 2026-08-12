@@ -20,10 +20,7 @@ services:
       context: ./frontend
       network: host
     ports:
-      # Bound to localhost only -- on a server with a host nginx in front
-      # (terminating TLS, proxying everything here), port 80/443 on the
-      # public interface belongs to that nginx, not this container directly.
-      - "127.0.0.1:3000:80"
+      - "3000:80"
     depends_on:
       - backend
 
