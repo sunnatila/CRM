@@ -42,7 +42,11 @@ class YellowPagesAdapter(SourceAdapter):
         seen_company_slugs: set[str] = set()
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(args=["--no-sandbox"])
+            # --disable-dev-shm-usage: Docker's default /dev/shm is 64MB, too
+            # small for Chromium's shared memory needs -- without this it
+            # silently stalls page loads (observed as Page.goto timeouts),
+            # especially on low-memory hosts. Makes Chromium use /tmp instead.
+            browser = await pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
             try:
                 context = await browser.new_context(user_agent=_HEADERS["User-Agent"])
 
