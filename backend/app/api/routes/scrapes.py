@@ -1,13 +1,66 @@
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.db import get_session
 from app.models.scrape_run import ScrapeRun
 from app.schemas.company import ScrapeRunOut
 from app.scrapers.pipeline import ADAPTERS, ScrapeAlreadyRunning, start_scrape, stop_scrape
+from app.scrapers.resilience import BROWSER_HEADERS, ProxyRotator
 
 router = APIRouter(prefix="/scrapes", tags=["scrapes"])
+
+
+@router.get("/diagnose/{source}")
+async def diagnose_source(source: str) -> dict:
+    """Is this source reachable from *this* server right now, and what is our exit IP?
+
+    Exists because "the scrape failed" has two very different causes that look
+    identical from the outside: our code broke, or the source blocked this host.
+    One request answers that without reading logs or re-running a whole crawl.
+    """
+    if source not in ADAPTERS:
+        raise HTTPException(status_code=404, detail=f"unknown source, expected one of {sorted(ADAPTERS)}")
+
+    settings = get_settings()
+    base_url = getattr(settings, f"{source}_base_url").rstrip("/")
+    proxy = ProxyRotator().next_proxy()
+
+    result: dict = {"source": source, "url": base_url, "proxy": proxy or "(direct)"}
+
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, proxy=proxy) as client:
+            resp = await client.get(base_url, headers=BROWSER_HEADERS)
+        result["status_code"] = resp.status_code
+        result["reachable"] = resp.status_code == 200
+        if resp.status_code == 403:
+            result["diagnosis"] = (
+                "BLOCKED -- the source refused this server's IP. Not a code bug: wait for "
+                "the ban to lapse, and/or set SCRAPER_PROXIES to route via another IP."
+            )
+        elif resp.status_code == 429:
+            result["diagnosis"] = (
+                "RATE LIMITED -- slow down: raise SCRAPER_REQUEST_DELAY_SECONDS and "
+                "avoid triggering repeated runs back to back."
+            )
+        elif resp.status_code == 200:
+            result["diagnosis"] = "OK -- source is reachable from this server, scraping should work."
+        else:
+            result["diagnosis"] = f"Unexpected status {resp.status_code}."
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic reports failures, doesn't raise them
+        result["reachable"] = False
+        result["diagnosis"] = f"Could not connect: {type(exc).__name__}: {exc}"
+
+    # Our public exit IP, so a block can be correlated with what the source sees.
+    try:
+        async with httpx.AsyncClient(timeout=10, proxy=proxy) as client:
+            result["exit_ip"] = (await client.get("https://api.ipify.org")).text.strip()
+    except Exception:  # noqa: BLE001 -- best-effort extra context
+        result["exit_ip"] = "(unknown)"
+
+    return result
 
 
 @router.get("", response_model=list[ScrapeRunOut])

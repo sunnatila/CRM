@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.scrapers.base import CompanyIn, RawRecord, SourceAdapter
 from app.scrapers.jsonld import extract_local_business
 from app.scrapers.resilience import (
+    BROWSER_HEADERS,
     FailureBudget,
     ProxyRotator,
     RateLimiter,
@@ -32,7 +33,6 @@ from app.scrapers.resilience import (
 
 _PAGE_TIMEOUT_MS = 45_000
 _MAX_PAGES_PER_RUBRIC = 50
-_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; ParsingProjectBot/1.0)"}
 
 
 class YellowPagesAdapter(SourceAdapter):
@@ -61,7 +61,12 @@ class YellowPagesAdapter(SourceAdapter):
                 proxy={"server": proxy} if proxy else None,
             )
             try:
-                context = await browser.new_context(user_agent=_HEADERS["User-Agent"])
+                context = await browser.new_context(
+                    user_agent=BROWSER_HEADERS["User-Agent"],
+                    extra_http_headers={
+                        k: v for k, v in BROWSER_HEADERS.items() if k != "User-Agent"
+                    },
+                )
 
                 for rubric_slug, rubric_label in rubrics.items():
                     async for company_slug in self._iter_rubric_company_slugs(context, rubric_slug):
@@ -103,7 +108,7 @@ class YellowPagesAdapter(SourceAdapter):
         """Returns {slug: display_label}, e.g. {"accountants-training": "Accountants - Training"}."""
         async with httpx.AsyncClient(
             base_url=self.base_url,
-            headers=_HEADERS,
+            headers=BROWSER_HEADERS,
             timeout=30,
             follow_redirects=True,
             proxy=self.proxies.next_proxy(),

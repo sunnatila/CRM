@@ -33,6 +33,28 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# A plain, current desktop-Chrome header set. The previous self-identifying
+# "ParsingProjectBot/1.0" UA sent an explicit "block me" signal to any WAF or
+# nginx rule that filters on it, for no benefit -- these sites publish no
+# crawler policy that treats a named bot better. Sending the same headers a
+# normal browser sends is the low-friction default.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+class SourceBlocked(Exception):
+    """The source refused us outright (403). Not retryable from this IP -- the
+    fix is a different exit IP or waiting the ban out, not more requests."""
+
 # Status codes worth retrying: rate limiting, plus the transient server-side 5xx
 # family. Notably absent: 403/404 -- those are answers, not blips, and retrying
 # them just burns the rate limit budget.
@@ -127,6 +149,16 @@ async def request_with_retry(
             await limiter.wait()
         try:
             response = await client.request(method, url, **kwargs)
+            if response.status_code == 403:
+                # Worth its own exception: a 403 here is almost always "this IP is
+                # banned", which no amount of retrying or slowing down fixes. Saying
+                # so plainly beats a raw httpx message that reads like a code bug.
+                raise SourceBlocked(
+                    f"403 Forbidden from {response.request.url.host} -- this server's IP "
+                    f"appears to be blocked by the source. Retrying or slowing down will "
+                    f"not clear an existing ban: wait for it to expire, or route through a "
+                    f"different exit IP via SCRAPER_PROXIES."
+                )
             if response.status_code not in _RETRY_STATUS:
                 return response
             if attempt == max_retries:
@@ -212,13 +244,18 @@ async def guarded(
     coro_factory: Callable[[], Awaitable[T]],
 ) -> T | None:
     """Run one fetch under the failure budget. Returns None if it failed and was
-    skipped; re-raises CancelledError (a stop request is not a failure) and
-    ScrapeAborted (budget exhausted)."""
+    skipped; re-raises CancelledError (a stop request is not a failure),
+    ScrapeAborted (budget exhausted) and SourceBlocked (see below)."""
     try:
         result = await coro_factory()
     except asyncio.CancelledError:
         raise
     except ScrapeAborted:
+        raise
+    except SourceBlocked:
+        # Not skippable: if the IP is banned then every remaining page will 403
+        # too, so grinding through the whole failure budget one retry-storm at a
+        # time just delays an inevitable abort by many minutes.
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberately broad: any per-item failure is skippable
         budget.record_failure(what, exc)

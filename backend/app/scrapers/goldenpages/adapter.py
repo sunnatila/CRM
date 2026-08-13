@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.scrapers.base import CompanyIn, RawRecord, SourceAdapter
 from app.scrapers.jsonld import extract_local_business
 from app.scrapers.resilience import (
+    BROWSER_HEADERS,
     FailureBudget,
     ProxyRotator,
     RateLimiter,
@@ -30,7 +31,6 @@ from app.scrapers.resilience import (
 )
 
 _MAX_PAGES_PER_RUBRIC = 200
-_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; ParsingProjectBot/1.0)"}
 
 
 class GoldenPagesAdapter(SourceAdapter):
@@ -47,7 +47,7 @@ class GoldenPagesAdapter(SourceAdapter):
         skip_ids = skip_ids or set()
         async with httpx.AsyncClient(
             base_url=self.base_url,
-            headers=_HEADERS,
+            headers=BROWSER_HEADERS,
             timeout=30,
             follow_redirects=True,
             proxy=self.proxies.next_proxy(),
