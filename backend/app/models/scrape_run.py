@@ -16,6 +16,10 @@ class ScrapeRun(Base):
     status: Mapped[str] = mapped_column(String(16), default="running")
     records_found: Mapped[int] = mapped_column(Integer, default=0)
     records_upserted: Mapped[int] = mapped_column(Integer, default=0)
+    # Pages/companies skipped after exhausting retries (AD-13). A run can be
+    # "success" with a non-zero count here: isolated failures are expected on a
+    # crawl this size, and surfacing them beats silently under-reporting.
+    records_failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     error_message: Mapped[str | None] = mapped_column(String(2000), nullable=True)
 
     def __repr__(self) -> str:

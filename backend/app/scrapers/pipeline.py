@@ -109,6 +109,11 @@ async def run_adapter(
 
     found = 0
     upserted = 0
+
+    def failed_count() -> int:
+        budget = getattr(adapter, "budget", None)
+        return budget.failed if budget is not None else 0
+
     try:
         async for raw in adapter.fetch_raw(skip_ids=skip_ids):
             found += 1
@@ -118,9 +123,13 @@ async def run_adapter(
             if found % _PROGRESS_COMMIT_EVERY == 0:
                 run.records_found = found
                 run.records_upserted = upserted
+                run.records_failed = failed_count()
                 await session.commit()
             if limit is not None and found >= limit:
                 break
+        # AD-13: isolated per-item failures were already skipped and counted, so
+        # reaching here is a success even with a non-zero records_failed. Only a
+        # systemic problem (ScrapeAborted) or a fatal one lands in `except`.
         run.status = "success"
     except asyncio.CancelledError:
         run.status = "stopped"
@@ -131,6 +140,7 @@ async def run_adapter(
     finally:
         run.records_found = found
         run.records_upserted = upserted
+        run.records_failed = failed_count()
         run.finished_at = datetime.now(UTC)
         await session.commit()
 

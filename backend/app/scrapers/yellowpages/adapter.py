@@ -12,7 +12,6 @@ that discovery step stays a plain httpx call -- no browser needed for it.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import AsyncIterator
 
@@ -23,9 +22,15 @@ from playwright.async_api import async_playwright
 from app.core.config import get_settings
 from app.scrapers.base import CompanyIn, RawRecord, SourceAdapter
 from app.scrapers.jsonld import extract_local_business
+from app.scrapers.resilience import (
+    FailureBudget,
+    ProxyRotator,
+    RateLimiter,
+    guarded,
+    request_with_retry,
+)
 
-_REQUEST_DELAY_SECONDS = 0.3
-_PAGE_TIMEOUT_MS = 30_000
+_PAGE_TIMEOUT_MS = 45_000
 _MAX_PAGES_PER_RUBRIC = 50
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; ParsingProjectBot/1.0)"}
 
@@ -34,19 +39,27 @@ class YellowPagesAdapter(SourceAdapter):
     source = "yellowpages"
 
     def __init__(self) -> None:
-        self.base_url = get_settings().yellowpages_base_url.rstrip("/")
+        settings = get_settings()
+        self.base_url = settings.yellowpages_base_url.rstrip("/")
+        self.limiter = RateLimiter(settings.scraper_request_delay_seconds)
+        self.budget = FailureBudget()
+        self.proxies = ProxyRotator()
 
     async def fetch_raw(self, skip_ids: set[str] | None = None) -> AsyncIterator[RawRecord]:
         skip_ids = skip_ids or set()
         rubrics = await self._discover_rubrics()
         seen_company_slugs: set[str] = set()
 
+        proxy = self.proxies.next_proxy()
         async with async_playwright() as pw:
             # --disable-dev-shm-usage: Docker's default /dev/shm is 64MB, too
             # small for Chromium's shared memory needs -- without this it
             # silently stalls page loads (observed as Page.goto timeouts),
             # especially on low-memory hosts. Makes Chromium use /tmp instead.
-            browser = await pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            browser = await pw.chromium.launch(
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                proxy={"server": proxy} if proxy else None,
+            )
             try:
                 context = await browser.new_context(user_agent=_HEADERS["User-Agent"])
 
@@ -56,7 +69,13 @@ class YellowPagesAdapter(SourceAdapter):
                             continue
                         seen_company_slugs.add(company_slug)
 
-                        payload = await self._fetch_company(context, company_slug, rubric_label)
+                        # One company page that won't render must not end the
+                        # crawl -- skipped and counted, streak alone aborts.
+                        payload = await guarded(
+                            self.budget,
+                            f"company {company_slug}",
+                            lambda s=company_slug, lbl=rubric_label: self._fetch_company(context, s, lbl),
+                        )
                         if payload is None:
                             continue
                         yield RawRecord(source_id=company_slug, payload=payload)
@@ -82,8 +101,16 @@ class YellowPagesAdapter(SourceAdapter):
 
     async def _discover_rubrics(self) -> dict[str, str]:
         """Returns {slug: display_label}, e.g. {"accountants-training": "Accountants - Training"}."""
-        async with httpx.AsyncClient(base_url=self.base_url, headers=_HEADERS, timeout=30) as client:
-            resp = await client.get("/en/list")
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            headers=_HEADERS,
+            timeout=30,
+            follow_redirects=True,
+            proxy=self.proxies.next_proxy(),
+        ) as client:
+            # Not guarded: no rubric catalog means no crawl, so a failure here
+            # (after retries) should surface as a failed run.
+            resp = await request_with_retry(client, "/en/list", limiter=self.limiter)
             resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
 
@@ -98,11 +125,20 @@ class YellowPagesAdapter(SourceAdapter):
     async def _iter_rubric_company_slugs(self, context, rubric_slug: str) -> AsyncIterator[str]:
         page = await context.new_page()
         try:
-            await page.goto(
-                f"{self.base_url}/en/rubric/{rubric_slug}",
-                wait_until="domcontentloaded",
-                timeout=_PAGE_TIMEOUT_MS,
+            # This exact goto timing out is what used to abort entire runs. Now a
+            # rubric that won't load is skipped and the crawl moves to the next one.
+            await self.limiter.wait()
+            opened = await guarded(
+                self.budget,
+                f"rubric {rubric_slug}",
+                lambda: page.goto(
+                    f"{self.base_url}/en/rubric/{rubric_slug}",
+                    wait_until="domcontentloaded",
+                    timeout=_PAGE_TIMEOUT_MS,
+                ),
             )
+            if opened is None:
+                return
             await page.wait_for_timeout(2000)
 
             seen: set[str] = set()
@@ -138,7 +174,7 @@ class YellowPagesAdapter(SourceAdapter):
         return slugs
 
     async def _fetch_company(self, context, company_slug: str, rubric_label: str) -> dict | None:
-        await asyncio.sleep(_REQUEST_DELAY_SECONDS)
+        await self.limiter.wait()
         page = await context.new_page()
         try:
             url = f"{self.base_url}/en/company/{company_slug}"

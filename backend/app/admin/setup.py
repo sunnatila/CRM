@@ -73,6 +73,7 @@ class ScrapeRunAdmin(ModelView, model=ScrapeRun):
         ScrapeRun.finished_at,
         ScrapeRun.records_found,
         ScrapeRun.records_upserted,
+        ScrapeRun.records_failed,
     ]
     column_sortable_list = [ScrapeRun.id, ScrapeRun.started_at]
     column_filters = [

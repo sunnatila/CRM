@@ -32,4 +32,5 @@ class ScrapeRunOut(BaseModel):
     status: str
     records_found: int
     records_upserted: int
+    records_failed: int
     error_message: str | None

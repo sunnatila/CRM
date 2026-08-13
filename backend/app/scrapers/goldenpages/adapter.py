@@ -12,7 +12,6 @@ ids -> company detail page.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import AsyncIterator
 
@@ -22,8 +21,14 @@ from bs4 import BeautifulSoup
 from app.core.config import get_settings
 from app.scrapers.base import CompanyIn, RawRecord, SourceAdapter
 from app.scrapers.jsonld import extract_local_business
+from app.scrapers.resilience import (
+    FailureBudget,
+    ProxyRotator,
+    RateLimiter,
+    guarded,
+    request_with_retry,
+)
 
-_REQUEST_DELAY_SECONDS = 0.3
 _MAX_PAGES_PER_RUBRIC = 200
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; ParsingProjectBot/1.0)"}
 
@@ -32,11 +37,21 @@ class GoldenPagesAdapter(SourceAdapter):
     source = "goldenpages"
 
     def __init__(self) -> None:
-        self.base_url = get_settings().goldenpages_base_url.rstrip("/")
+        settings = get_settings()
+        self.base_url = settings.goldenpages_base_url.rstrip("/")
+        self.limiter = RateLimiter(settings.scraper_request_delay_seconds)
+        self.budget = FailureBudget()
+        self.proxies = ProxyRotator()
 
     async def fetch_raw(self, skip_ids: set[str] | None = None) -> AsyncIterator[RawRecord]:
         skip_ids = skip_ids or set()
-        async with httpx.AsyncClient(base_url=self.base_url, headers=_HEADERS, timeout=30) as client:
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            headers=_HEADERS,
+            timeout=30,
+            follow_redirects=True,
+            proxy=self.proxies.next_proxy(),
+        ) as client:
             rubrics = await self._discover_rubrics(client)
             seen_company_ids: set[str] = set()
 
@@ -46,7 +61,13 @@ class GoldenPagesAdapter(SourceAdapter):
                         continue
                     seen_company_ids.add(company_id)
 
-                    payload = await self._fetch_company(client, company_id)
+                    # One unreachable company page must not end the crawl -- it's
+                    # skipped and counted, and only an unbroken streak aborts.
+                    payload = await guarded(
+                        self.budget,
+                        f"company {company_id}",
+                        lambda cid=company_id: self._fetch_company(client, cid),
+                    )
                     if payload is None:
                         continue
                     yield RawRecord(source_id=company_id, payload=payload)
@@ -69,7 +90,9 @@ class GoldenPagesAdapter(SourceAdapter):
         )
 
     async def _discover_rubrics(self, client: httpx.AsyncClient) -> list[str]:
-        resp = await client.get("/")
+        # Not guarded: without the rubric list there is no crawl at all, so a
+        # failure here (after retries) should surface as a failed run.
+        resp = await request_with_retry(client, "/", limiter=self.limiter)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
 
@@ -86,9 +109,14 @@ class GoldenPagesAdapter(SourceAdapter):
     async def _iter_rubric_company_ids(self, client: httpx.AsyncClient, rubric_id: str) -> AsyncIterator[str]:
         for page in range(1, _MAX_PAGES_PER_RUBRIC + 1):
             url = f"/rubrics/?Id={rubric_id}&Page={page}" if page > 1 else f"/rubrics/?Id={rubric_id}"
-            await asyncio.sleep(_REQUEST_DELAY_SECONDS)
-            resp = await client.get(url)
-            if resp.status_code != 200:
+            # A dead listing page ends this rubric but leaves the rest of the
+            # crawl running -- there are hundreds of other rubrics to walk.
+            resp = await guarded(
+                self.budget,
+                f"rubric {rubric_id} page {page}",
+                lambda u=url: request_with_retry(client, u, limiter=self.limiter),
+            )
+            if resp is None or resp.status_code != 200:
                 return
             soup = BeautifulSoup(resp.text, "lxml")
 
@@ -105,9 +133,8 @@ class GoldenPagesAdapter(SourceAdapter):
                 return
 
     async def _fetch_company(self, client: httpx.AsyncClient, company_id: str) -> dict | None:
-        await asyncio.sleep(_REQUEST_DELAY_SECONDS)
         url = f"/company/?Id={company_id}"
-        resp = await client.get(url)
+        resp = await request_with_retry(client, url, limiter=self.limiter)
         if resp.status_code != 200:
             return None
 

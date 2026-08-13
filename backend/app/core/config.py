@@ -20,6 +20,26 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
+    # --- Scraping resilience (AD-13) ---
+    # Seconds to wait between requests to the same source. The single biggest
+    # lever against 429s: staying under the rate limit beats reacting to it.
+    scraper_request_delay_seconds: float = 1.0
+    # How many times to retry one request before giving up on it. Retries use
+    # exponential backoff with jitter, and honour a 429's Retry-After header.
+    scraper_max_retries: int = 4
+    scraper_backoff_base_seconds: float = 2.0
+    scraper_backoff_max_seconds: float = 120.0
+    # Consecutive per-item failures tolerated before aborting the whole run.
+    # Isolated failures are skipped and counted; a long unbroken streak means
+    # something systemic (banned, site down) and is worth stopping for.
+    scraper_max_consecutive_failures: int = 25
+    # Optional outbound proxies, comma-separated, rotated round-robin per
+    # request (e.g. "http://user:pass@host:8080,socks5://host:1080"). Empty
+    # means connect directly. Use proxies you actually control or pay for --
+    # free public proxy lists are mostly dead, slow, and untrustworthy, and
+    # would make this pipeline *less* reliable, not more.
+    scraper_proxies: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
