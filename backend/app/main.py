@@ -1,24 +1,15 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from app.admin.setup import setup_admin
-from app.api.routes import (
-    auth,
-    claim_requests,
-    claims,
-    companies,
-    notifications,
-    operators,
-    permission_requests,
-    reviews,
-    scrapes,
-    ws,
-)
+from app.api.routes import auth, companies, leads, notifications, operators, scrapes, ws
 from app.core.config import get_settings
+from app.services.leads import LeadError
 from app.core.db import async_session
 from app.core.security import hash_password
 from app.models.user import User
@@ -57,18 +48,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(LeadError)
+async def _lead_error_handler(_request: Request, exc: LeadError) -> JSONResponse:
+    """One place turns a domain refusal into HTTP, so every /leads route answers
+    in the same {code, message, ...context} shape (AR-13). `message` is already
+    operator-facing Uzbek -- the frontend shows it verbatim."""
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.as_detail()})
+
+
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(companies.router, prefix="/api")
 app.include_router(scrapes.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
-app.include_router(reviews.router, prefix="/api")
-app.include_router(permission_requests.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(operators.router, prefix="/api")
 app.include_router(ws.router, prefix="/api")
-app.include_router(claims.router, prefix="/api")
-app.include_router(claim_requests.router, prefix="/api")
+app.include_router(leads.router, prefix="/api")
 
 setup_admin(app)
 

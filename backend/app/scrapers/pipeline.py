@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import async_session
 from app.models.company import Company
+from app.models.rubric_progress import RubricProgress
 from app.models.scrape_run import ScrapeRun
 from app.scrapers.base import CompanyIn, SourceAdapter
 from app.scrapers.goldenpages.adapter import GoldenPagesAdapter
@@ -70,8 +72,36 @@ def stop_scrape(source: str) -> int | None:
 
 
 async def _run_in_background(run_id: int, source: str, limit: int | None) -> None:
-    async with async_session() as session:
-        await run_adapter(session, source, run_id=run_id, limit=limit)
+    """Guarantee the run row never gets stuck showing "running" forever.
+
+    Observed in practice: an exception that poisons `run_adapter`'s session
+    mid-transaction (e.g. a dropped DB connection) can make its own `finally`
+    block's `session.commit()` *also* fail, so the row is never updated -- the
+    task still ends and is removed from `_RUNNING_TASKS` (nothing awaits it, so
+    the exception is otherwise silently dropped), but `scrape_runs.status` is
+    left at "running" with no record of why. A second, fresh session/connection
+    here can write the failure even when the first one is unusable.
+    """
+    try:
+        async with async_session() as session:
+            await run_adapter(session, source, run_id=run_id, limit=limit)
+    except asyncio.CancelledError:
+        async with async_session() as session:
+            run = await session.get(ScrapeRun, run_id)
+            if run is not None and run.status == "running":
+                run.status = "stopped"
+                run.finished_at = datetime.now(UTC)
+                await session.commit()
+        raise
+    except Exception as exc:  # noqa: BLE001 -- last-resort backstop, see docstring
+        logging.getLogger(__name__).exception("scrape run %s (%s) died unrecorded", run_id, source)
+        async with async_session() as session:
+            run = await session.get(ScrapeRun, run_id)
+            if run is not None and run.status == "running":
+                run.status = "failed"
+                run.error_message = f"unrecorded failure: {type(exc).__name__}: {exc}"[:2000]
+                run.finished_at = datetime.now(UTC)
+                await session.commit()
 
 
 async def run_adapter(
@@ -106,6 +136,36 @@ async def run_adapter(
     skip_ids = set(
         (await session.execute(select(Company.source_id).where(Company.source == source))).scalars().all()
     )
+
+    # AD-16: resume at rubric granularity. Without this an interrupted crawl
+    # re-walks the whole catalog on restart just to re-skip what it already has.
+    adapter.done_rubrics = set(
+        (
+            await session.execute(
+                select(RubricProgress.rubric_key).where(RubricProgress.source == source)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    async def _mark_rubric_done(rubric_key: str, companies_seen: int) -> None:
+        exists = (
+            await session.execute(
+                select(RubricProgress).where(
+                    RubricProgress.source == source, RubricProgress.rubric_key == rubric_key
+                )
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            session.add(
+                RubricProgress(source=source, rubric_key=rubric_key, companies_seen=companies_seen)
+            )
+        else:
+            exists.companies_seen = companies_seen
+        await session.commit()
+
+    adapter.on_rubric_complete = _mark_rubric_done
 
     found = 0
     upserted = 0

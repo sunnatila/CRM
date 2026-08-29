@@ -7,7 +7,9 @@ import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, API_BASE } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { CompanyQueueItem, OperatorStats } from "@/lib/types";
+import { LeadStatusBadge } from "@/components/lead-status-badge";
+import { FieldStatusBadge } from "@/components/field-status-badge";
+import type { LeadList, LeadListItem, OperatorStats } from "@/lib/types";
 
 function avatarSrc(avatarUrl: string | null | undefined): string | undefined {
   if (!avatarUrl) return undefined;
@@ -18,18 +20,21 @@ export function ProfilePage() {
   const { user, refreshUser } = useAuth();
   const isOperator = user?.role === "operator";
   const [stats, setStats] = useState<OperatorStats | null>(null);
-  const [history, setHistory] = useState<CompanyQueueItem[] | null>(null);
+  const [history, setHistory] = useState<LeadListItem[] | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function load() {
     if (!isOperator) return;
-    const [statsRes, historyRes] = await Promise.all([
+    // "actor: me" rather than a filled-by lookup: a finished lead is the unit of
+    // work now, and the operator who closed it is the one who did it.
+    const [statsRes, approved, rejected] = await Promise.all([
       api.get<OperatorStats>("/me/stats"),
-      api.get<CompanyQueueItem[]>("/reviews", { params: { status: "filled", mine: true, limit: 20 } }),
+      api.get<LeadList>("/leads", { params: { status: "approved", actor: "me", limit: 20 } }),
+      api.get<LeadList>("/leads", { params: { status: "rejected", actor: "me", limit: 20 } }),
     ]);
     setStats(statsRes.data);
-    setHistory(historyRes.data);
+    setHistory([...approved.data.items, ...rejected.data.items].slice(0, 20));
   }
 
   useEffect(() => {
@@ -120,13 +125,13 @@ export function ProfilePage() {
             </div>
 
             <div>
-              <h3 className="mb-3 text-[16px] font-semibold">So'nggi to'ldirilganlar</h3>
+              <h3 className="mb-3 text-[16px] font-semibold">So'nggi yakunlanganlar</h3>
               <div className="rounded-lg border">
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>Nomi</TableHead>
-                      <TableHead>Manba</TableHead>
+                      <TableHead>Holat</TableHead>
                       <TableHead>Website</TableHead>
                       <TableHead>LMS</TableHead>
                     </TableRow>
@@ -137,15 +142,21 @@ export function ProfilePage() {
                         <TableCell className="max-w-64 truncate font-medium" title={c.name}>
                           {c.name}
                         </TableCell>
-                        <TableCell className="text-muted-foreground">{c.source}</TableCell>
-                        <TableCell className="text-muted-foreground">{c.website_status}</TableCell>
-                        <TableCell className="text-muted-foreground">{c.lms_status}</TableCell>
+                        <TableCell>
+                          <LeadStatusBadge status={c.status} />
+                        </TableCell>
+                        <TableCell>
+                          <FieldStatusBadge available={c.website_available} />
+                        </TableCell>
+                        <TableCell>
+                          <FieldStatusBadge available={c.lms_available} />
+                        </TableCell>
                       </TableRow>
                     ))}
                     {history !== null && history.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={4} className="text-muted-foreground text-center">
-                          Hali hech narsa to'ldirilmagan.
+                          Hali yakunlangan ish yo'q.
                         </TableCell>
                       </TableRow>
                     )}

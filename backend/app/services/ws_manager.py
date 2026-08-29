@@ -26,14 +26,24 @@ class ConnectionManager:
             self._connections.pop(user_id, None)
 
     async def send_to_user(self, user_id: int, payload: dict[str, Any]) -> None:
-        conns = self._connections.get(user_id)
+        await self._send(self._connections.get(user_id), payload)
+
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        """Everyone with an open socket. Used for lead status changes so one
+        operator claiming a lead makes it disappear from everyone else's queue
+        without them refreshing (FR-15). Best-effort: the REST list stays
+        authoritative, so a dropped frame costs a stale row, not correctness."""
+        for conns in list(self._connections.values()):
+            await self._send(conns, payload)
+
+    async def _send(self, conns: set[WebSocket] | None, payload: dict[str, Any]) -> None:
         if not conns:
             return
         dead: list[WebSocket] = []
-        for ws in conns:
+        for ws in list(conns):
             try:
                 await ws.send_json(payload)
-            except Exception:  # noqa: BLE001 -- a dead socket must not break the caller's notify()
+            except Exception:  # noqa: BLE001 -- a dead socket must not break the caller
                 dead.append(ws)
         for ws in dead:
             conns.discard(ws)

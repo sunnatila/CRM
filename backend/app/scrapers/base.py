@@ -41,6 +41,15 @@ class SourceAdapter(ABC):
 
     source: str
 
+    # AD-16 rubric-level resume. Set by the pipeline before `fetch_raw`, so that
+    # `fetch_raw`'s signature (and every caller of it) stays unchanged:
+    #   done_rubrics      -- rubric keys already fully walked; adapters skip these
+    #   on_rubric_complete -- awaited with (rubric_key, companies_seen) once a
+    #                         rubric has been enumerated end to end
+    # Both default to "no resume info", so an adapter used standalone still works.
+    done_rubrics: set[str] = frozenset()  # type: ignore[assignment]
+    on_rubric_complete = None
+
     @abstractmethod
     def fetch_raw(self, skip_ids: set[str] | None = None) -> AsyncIterator[RawRecord]:
         """Yield raw records from the source. Records whose source_id is in skip_ids

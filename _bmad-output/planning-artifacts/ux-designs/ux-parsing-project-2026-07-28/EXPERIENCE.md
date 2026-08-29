@@ -2,10 +2,12 @@
 name: OperatorDesk
 status: final
 sources: []
-updated: 2026-07-28
+updated: 2026-08-20
 ---
 
 # OperatorDesk — Experience Spine
+
+> **Reworked 2026-08-20 (Lead Workflow v2 — see `prds/prd-parsing-project-2026-08-20/prd.md`).** The queue, the review form, the lock-on-submit pattern and both request flows described below were replaced by a five-status lead pipeline. Sections superseded by that change are marked inline; everything unmarked still holds.
 
 > Single-surface responsive web, desktop-primary. React + Vite + TypeScript + Tailwind + shadcn/ui SPA against the existing FastAPI backend. Paired with `DESIGN.md`. Fast-path draft — `[ASSUMPTION]` tags mark inferred decisions pending user confirmation.
 
@@ -20,7 +22,8 @@ Single-surface responsive web app, desktop-primary (operators work at a desk, ph
 | Surface | Reached from | Role | Purpose |
 |---|---|---|---|
 | Login | App entry | Both | Username + password → JWT |
-| Queue ("To'ldirish ro'yxati") | Sidebar default / post-login | Operator | Unfilled companies, table, row → Fill |
+| Leadlar | Sidebar default / post-login | Operator | Five status tabs; row click claims and opens |
+| Barcha leadlar | Sidebar | Admin | The same table, observation-only: owner column always on, no claiming |
 | Company Review | Queue row click, or "Fill" button | Operator | Company info + Website/LMS review form; locked view + Request-permission after submit |
 | My Stats & Profile | Sidebar / avatar menu | Operator | Own daily/total counts, filled-record history, avatar upload |
 | Notifications panel | Bell icon, top bar | Both | Permission-request lifecycle events |
@@ -50,10 +53,14 @@ Behavioral. Visual specs live in `DESIGN.md.Components`.
 
 | Component | Use | Behavioral rules |
 |---|---|---|
-| Company row | Queue table | Click anywhere opens Company Review. Status column shows two mini status-badges (Website, LMS) reflecting current state — both `pending` (amber) until filled. |
-| Review field (Website / LMS) | Company Review | Three states: **editable** (checkbox "Mavjud" + `Textarea` for izoh, both required before submit — see State Patterns), **locked-mine** (disabled, "Siz to'ldirdingiz" + timestamp, no request-access button), **locked-other** (disabled, "{operator} tomonidan to'ldirilgan" + "Ruxsat so'rash" button). Website and LMS are independent — one can be locked while the other is still editable, if the backend ever allows partial submit (`v1` submits both together — see Key Flows). |
-| Submit action | Company Review | Single "Saqlash" button submits both fields together (not per-field) and immediately transitions both to locked. `AlertDialog` confirms: "Saqlagandan so'ng bu yozuvni faqat ruxsat bilan tahrirlash mumkin. Davom etasizmi?" — the lock is a real commitment, the UI treats it as one. |
-| Request-permission button | Locked-other review field | Click → `AlertDialog` optional reason field (`[ASSUMPTION]` free-text "Nega qayta tahrirlashni so'rayapsiz?") → submits request, button becomes disabled "So'ralgan — kutilmoqda" (pending amber). Re-clickable only after admin resolves (approve reopens the field; deny re-enables the button, no cooldown `[ASSUMPTION]`). |
+| Lead row | Queue table | Click anywhere **claims** the lead and opens it — for `Yangi` and `Kutilmoqda` there is no separate confirm step. Finished leads open read-only. Columns: lead status badge, the two field badges, and — for `Kutilmoqda` — the last handover comment inline, so an operator can judge the lead without opening it. |
+| Review field (Website / LMS) | Lead page | **Superseded 2026-08-20.** No lock states. While the lead is yours: a three-way choice (Mavjud / Yo'q / Belgilanmagan) plus a free-text izoh, both autosaved, neither required. Otherwise: read-only text. "Belgilanmagan" is a real stored state — the old form had no way to say it and wrote `false` instead. |
+| Save | Lead page | **Superseded 2026-08-20.** There is no Saqlash button and no confirm dialog. Field edits autosave ~1s after typing stops; the indicator next to the status badge says so. Finishing is a separate, deliberate act: **Tasdiqlash** (disabled until both fields are decided, with the reason shown beneath) or **Rad etish** (always available, reason required). |
+| Admin lead view | Lead page, admin | **Added 2026-08-20.** An admin sees every field and the full timeline but no work controls -- `available_actions` returns only "Majburan bo'shatish" or "Operatorga biriktirish". Their queue row click opens the lead; it never claims. The admin's tab set has no "Mening ishim", because an admin never holds one. |
+| Action bar | Lead page | Renders exactly the actions the server returned in `available_actions`. The client never derives "can I approve this yet?" itself — one state machine, server-side. |
+| Handover dialog | Any exit from an owned lead | The one guarded moment in the product. Reached from the back button, the sidebar, a click on another lead, or the explicit "Qoldirish" button — all funnel through one component. The confirm button stays disabled while the comment is empty; the validation message is `aria-live`. Cancel is worded "Ishda qolish", not "Bekor qilish": the operator is choosing to stay, not aborting something. |
+| Timeline | Lead page | Newest first. Every status change, comment, handover, finish, reopen, auto-release and admin action, with actor and relative time. This is what replaced the lock as the accountability mechanism, so it is a primary panel, not a footnote. |
+| ~~Request-permission button~~ | — | **Removed 2026-08-20.** Replaced by "Qayta ochish": any operator reopens any finished lead immediately, giving a reason that lands in the timeline. No admin, no waiting. |
 | Notification bell | Top bar, both roles | Unread count badge (accent sky dot, not a full badge — quiet by design per `DESIGN.md`). Click opens `Popover` list, newest first. Operator sees "Ruxsatingiz tasdiqlandi: {company}" / "rad etildi". Admin sees "{operator} ruxsat so'radi: {company}". Item click deep-links: operator → Company Review (now unlocked); admin → Permission Requests row. |
 | Stat tile | Admin Dashboard | See `DESIGN.md.Components.stat-tile`. Grid of 3–4: "Bugun to'ldirilgan", "Bu hafta", "Kutilayotgan so'rovlar", "Faol operatorlar". |
 | Operator leaderboard table | Admin Dashboard | Operator name + avatar, today's count, this-week count, all-time count, sortable by any column. Row click → operator's own stats/history (admin viewing operator's page — read-only, no edit). |
@@ -66,14 +73,13 @@ Behavioral. Visual specs live in `DESIGN.md.Components`.
 |---|---|---|
 | Cold load | Queue, Dashboard, Operators | shadcn `Skeleton` rows (5–8) matching final layout. |
 | Empty queue | Queue | `display-sm`: "Ro'yxat bo'sh — hammasi to'ldirilgan." No action button (nothing to do); this is the success state, not an error. |
-| Review field, editable, incomplete | Company Review | Checkbox unset AND comment empty → Submit disabled, helper text under the field: "Belgilang va izoh yozing." Both website and LMS must be complete before Submit enables (`[ASSUMPTION]`: can't submit half-done). |
-| Review field, locked-mine | Company Review | Muted background, lock icon, no request-access affordance (you don't need permission from yourself — a data-fix in this state goes through the same request flow as anyone, `[ASSUMPTION]` unless product wants a self-serve short-window edit, not specified). |
-| Review field, locked-other | Company Review | Muted background, lock icon, filler's name + timestamp, "Ruxsat so'rash" button. |
-| Permission requested, pending | Company Review (requester), Notifications | Amber "pending" badge replaces the request button; live-updates on next poll if admin resolves while the page is open. |
-| Permission denied | Notifications, Company Review | Notification: "{admin} rad etdi." Field returns to locked-other state, request button re-enabled. |
-| Submit in flight | Company Review | Submit button shows spinner, disabled; on success, dialog/sheet transitions to locked view in place (no navigation away). |
+| Lead, partially filled | Lead page | **Superseded 2026-08-20.** Nothing is required to leave a lead half-done — that is the normal case, and the handover comment is what carries it forward. Only **Tasdiqlash** requires both fields decided, and it says which one is missing. |
+| Lead held by someone else | Lead page (admin only) | Operators never reach this state: the lead is absent from their queue and the URL 404s. Admins see a banner naming the holder, plus "Majburan bo'shatish". |
+| Lead auto-released | Timeline | After 4 hours with no activity the hold lapses; the lead reappears in `Kutilmoqda` and the timeline shows "Avtomatik bo'shatildi — 4 soat harakatsizlik" attributed to Tizim. Draft data is kept. |
+| Empty queue tab | Queue | One message per tab, and several are success states rather than errors: "Yangi lead qolmadi — hammasi ishga olingan." |
+| Save failure | Lead page | The autosave indicator turns to "Saqlanmadi — qayta urinilmoqda" and **the typed content stays on screen**. What the operator wrote is the only copy until it lands. |
 | Save/network failure | Any mutation | shadcn `Toast` (destructive): "Saqlab bo'lmadi. Qayta urinib ko'ring." Form data retained, not cleared. |
-| Duplicate-submit race | Company Review | Two operators open the same unfilled row; second submitter's request is rejected server-side (already locked) → `Toast`: "Bu yozuvni {operator} allaqachon to'ldirdi." View refreshes to locked-other. |
+| Claim race | Queue | Two operators click the same row at once; the database picks one. The loser gets "Bu leadni boshqa operator band qilib ulgurdi." and the queue refreshes. In practice this is rare, because a claim broadcasts over the WebSocket and removes the row from everyone else's list within a second. |
 
 ## Interaction Primitives
 
@@ -111,7 +117,8 @@ Behavioral. Visual contrast lives in `DESIGN.md` (shadcn WCAG AA defaults; statu
 - **Lifted from Linear/shadcn admin templates:** dense sortable tables as the primary content pattern, quiet status badges, restrained color use.
 - **Lifted from support/ticketing tools (e.g. Zendesk queue views):** the "queue → detail → resolve → back to queue" loop for the operator's core task.
 - **Rejected — gamification (streaks, confetti, badges-for-badges):** this is a data-quality tool; the admin dashboard reports counts, it doesn't reward them. A sortable table beats a leaderboard widget with medals.
-- **Rejected — free-form status (custom tags beyond confirmed/absent/pending):** three states, no more — the whole point is a scannable, unambiguous queue.
+- **Rejected — free-form status (operator-defined tags):** the five lead states and three field states are fixed. The point is a scannable, unambiguous queue; a configurable pipeline would mean a different workflow per operator.
+- **Rejected — approval gates on operator actions (2026-08-20):** v1 routed re-edits and deadline changes through an admin. It made the admin a bottleneck and left operators idle. v2 permits the action and records it; the admin watches flow instead of authorising it.
 - **Rejected — real-time WebSocket notifications for v1:** polling is simpler, no new infra, "prompt enough" for an internal tool; noted as upgradable, not as a compromise to hide.
 
 ## Key Flows

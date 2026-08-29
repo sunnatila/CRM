@@ -2,12 +2,12 @@ import type { ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   Bell,
-  CalendarClock,
+  Briefcase,
   ClipboardList,
   LayoutDashboard,
+  ListChecks,
   LogOut,
   UserRound,
-  UserRoundCog,
   UsersRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -31,16 +31,17 @@ interface NavItem {
 }
 
 const OPERATOR_NAV: NavItem[] = [
-  { to: "/queue", label: "To'ldirish ro'yxati", icon: ClipboardList },
-  { to: "/my-requests", label: "Mening so'rovlarim", icon: Bell },
+  { to: "/queue", label: "Leadlar", icon: ClipboardList },
+  { to: "/my-work", label: "Mening ishlarim", icon: Briefcase },
+  { to: "/notifications", label: "Bildirishnomalar", icon: Bell },
   { to: "/profile", label: "Mening natijalarim", icon: UserRound },
 ];
 
 const ADMIN_NAV: NavItem[] = [
   { to: "/admin", label: "Boshqaruv paneli", icon: LayoutDashboard },
+  { to: "/admin/leads", label: "Barcha leadlar", icon: ListChecks },
   { to: "/admin/operators", label: "Operatorlar", icon: UsersRound },
-  { to: "/admin/permission-requests", label: "Ruxsat so'rovlari", icon: UserRoundCog },
-  { to: "/admin/claim-requests", label: "Ish so'rovlari", icon: CalendarClock },
+  { to: "/notifications", label: "Bildirishnomalar", icon: Bell },
 ];
 
 function initials(fullName: string): string {

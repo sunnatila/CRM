@@ -1,23 +1,32 @@
 """yellowpages.uz adapter.
 
-Confirmed (2026-07-26, by rendering real pages): a Nuxt 3 app where rubric listings
-and company detail data are populated client-side after load -- a plain HTTP GET does
-not see them, so this adapter drives a real (headless) browser via Playwright. Like
-goldenpages, company detail pages carry a schema.org LocalBusiness JSON-LD block once
-rendered, so normalization reuses the same jsonld helper.
+Re-measured 2026-08-29: **this source needs no browser at all.**
 
-The rubric *catalog* itself (chapter/rubric slugs) IS server-rendered on /en/list, so
-that discovery step stays a plain httpx call -- no browser needed for it.
+The original July note ("a Nuxt 3 app where listings and detail data are populated
+client-side, so drive Playwright") was true when written and has not been true for
+a while. Both the rubric listing and the company detail page are server-rendered:
+the listing's company links and the detail page's schema.org JSON-LD + #contacts
+card are all present in the raw HTML.
+
+Pagination is a plain query parameter, `?pagenumber=N`. That was missed twice:
+`?page=N` is *accepted and silently ignored* (it returns page 1), which made
+pagination look client-only, and the Ant Design "next" control is `display:none`
+in the DOM, so a headless click on it times out. Both dead ends -- the real
+mechanism is a URL the server honours.
+
+Crawl shape: /en/list -> rubric slugs -> /en/rubric/{slug}?pagenumber=N -> company
+slugs -> /en/company/{slug}.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator
 
 import httpx
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright
 
 from app.core.config import get_settings
 from app.scrapers.base import CompanyIn, RawRecord, SourceAdapter
@@ -31,8 +40,10 @@ from app.scrapers.resilience import (
     request_with_retry,
 )
 
-_PAGE_TIMEOUT_MS = 45_000
-_MAX_PAGES_PER_RUBRIC = 50
+logger = logging.getLogger(__name__)
+
+# 15 companies per listing page; the cap is a runaway guard, not an expected limit.
+_MAX_PAGES_PER_RUBRIC = 200
 
 
 class YellowPagesAdapter(SourceAdapter):
@@ -44,48 +55,86 @@ class YellowPagesAdapter(SourceAdapter):
         self.limiter = RateLimiter(settings.scraper_request_delay_seconds)
         self.budget = FailureBudget()
         self.proxies = ProxyRotator()
+        self.concurrency = max(1, settings.scraper_concurrency)
+
+    async def _fetch_batch(
+        self, slugs: list[str], rubric_label: str, client: httpx.AsyncClient
+    ) -> list[RawRecord]:
+        """Fetch several company pages at once over plain HTTP.
+
+        Each fetch still passes through the shared RateLimiter, so this raises
+        utilisation (overlapping the wait for each response) without raising the
+        request rate the site sees.
+        """
+        if not slugs:
+            return []
+
+        results = await asyncio.gather(
+            *(
+                guarded(
+                    self.budget,
+                    f"company {slug}",
+                    lambda s=slug: self._fetch_company(client, s, rubric_label),
+                )
+                for slug in slugs
+            ),
+            return_exceptions=True,
+        )
+
+        records: list[RawRecord] = []
+        fatal: BaseException | None = None
+        for slug, res in zip(slugs, results, strict=True):
+            if isinstance(res, BaseException):
+                # gather() collected it rather than unwinding; ScrapeAborted /
+                # SourceBlocked / cancellation still have to end the run, so
+                # re-raise after the whole batch is accounted for.
+                fatal = fatal or res
+                continue
+            if res is not None:
+                records.append(RawRecord(source_id=slug, payload=res))
+        if fatal is not None:
+            raise fatal
+        return records
 
     async def fetch_raw(self, skip_ids: set[str] | None = None) -> AsyncIterator[RawRecord]:
         skip_ids = skip_ids or set()
         rubrics = await self._discover_rubrics()
         seen_company_slugs: set[str] = set()
 
-        proxy = self.proxies.next_proxy()
-        async with async_playwright() as pw:
-            # --disable-dev-shm-usage: Docker's default /dev/shm is 64MB, too
-            # small for Chromium's shared memory needs -- without this it
-            # silently stalls page loads (observed as Page.goto timeouts),
-            # especially on low-memory hosts. Makes Chromium use /tmp instead.
-            browser = await pw.chromium.launch(
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-                proxy={"server": proxy} if proxy else None,
-            )
-            try:
-                context = await browser.new_context(
-                    user_agent=BROWSER_HEADERS["User-Agent"],
-                    extra_http_headers={
-                        k: v for k, v in BROWSER_HEADERS.items() if k != "User-Agent"
-                    },
-                )
+        async with httpx.AsyncClient(
+            headers=BROWSER_HEADERS,
+            timeout=30,
+            follow_redirects=True,
+            proxy=self.proxies.next_proxy(),
+            limits=httpx.Limits(max_connections=self.concurrency * 2),
+        ) as client:
+            for rubric_slug, rubric_label in rubrics.items():
+                # AD-16: a rubric already walked end to end is not re-enumerated.
+                if rubric_slug in self.done_rubrics:
+                    continue
+                seen_here = 0
+                batch: list[str] = []
 
-                for rubric_slug, rubric_label in rubrics.items():
-                    async for company_slug in self._iter_rubric_company_slugs(context, rubric_slug):
-                        if company_slug in seen_company_slugs or company_slug in skip_ids:
-                            continue
-                        seen_company_slugs.add(company_slug)
+                async for company_slug in self._iter_rubric_company_slugs(client, rubric_slug):
+                    seen_here += 1
+                    if company_slug in seen_company_slugs or company_slug in skip_ids:
+                        continue
+                    seen_company_slugs.add(company_slug)
+                    batch.append(company_slug)
+                    if len(batch) < self.concurrency:
+                        continue
+                    for rec in await self._fetch_batch(batch, rubric_label, client):
+                        yield rec
+                    batch = []
 
-                        # One company page that won't render must not end the
-                        # crawl -- skipped and counted, streak alone aborts.
-                        payload = await guarded(
-                            self.budget,
-                            f"company {company_slug}",
-                            lambda s=company_slug, lbl=rubric_label: self._fetch_company(context, s, lbl),
-                        )
-                        if payload is None:
-                            continue
-                        yield RawRecord(source_id=company_slug, payload=payload)
-            finally:
-                await browser.close()
+                for rec in await self._fetch_batch(batch, rubric_label, client):
+                    yield rec
+
+                # Reached only if the rubric was enumerated without the consumer
+                # breaking out (e.g. hitting `limit`), so a partial walk is never
+                # recorded as complete.
+                if self.on_rubric_complete is not None:
+                    await self.on_rubric_complete(rubric_slug, seen_here)
 
     def normalize(self, raw: RawRecord) -> CompanyIn:
         p = raw.payload
@@ -127,67 +176,62 @@ class YellowPagesAdapter(SourceAdapter):
                 rubrics[slug] = label
         return rubrics
 
-    async def _iter_rubric_company_slugs(self, context, rubric_slug: str) -> AsyncIterator[str]:
-        page = await context.new_page()
-        try:
-            # This exact goto timing out is what used to abort entire runs. Now a
-            # rubric that won't load is skipped and the crawl moves to the next one.
-            await self.limiter.wait()
-            opened = await guarded(
+    async def _iter_rubric_company_slugs(
+        self, client: httpx.AsyncClient, rubric_slug: str
+    ) -> AsyncIterator[str]:
+        """Walk one rubric's listing pages via `?pagenumber=N`.
+
+        Termination is "this page introduced nothing new" rather than a parsed
+        page count: past the last page the site still returns 200 with a valid
+        shell, so a status check alone would loop to the runaway cap.
+        """
+        seen: set[str] = set()
+        for page_no in range(1, _MAX_PAGES_PER_RUBRIC + 1):
+            url = f"{self.base_url}/en/rubric/{rubric_slug}"
+            if page_no > 1:
+                url = f"{url}?pagenumber={page_no}"
+
+            resp = await guarded(
                 self.budget,
-                f"rubric {rubric_slug}",
-                lambda: page.goto(
-                    f"{self.base_url}/en/rubric/{rubric_slug}",
-                    wait_until="domcontentloaded",
-                    timeout=_PAGE_TIMEOUT_MS,
-                ),
+                f"rubric {rubric_slug} page {page_no}",
+                lambda u=url: request_with_retry(client, u, limiter=self.limiter),
             )
-            if opened is None:
+            if resp is None or resp.status_code != 200:
                 return
-            await page.wait_for_timeout(2000)
 
-            seen: set[str] = set()
-            for _ in range(_MAX_PAGES_PER_RUBRIC):
-                slugs = await self._extract_company_slugs(page)
-                new_slugs = slugs - seen
-                if not new_slugs and seen:
-                    return
-                for slug in new_slugs:
-                    seen.add(slug)
-                    yield slug
+            new_slugs = self._extract_company_slugs(resp.text) - seen
+            if not new_slugs:
+                return
+            for slug in new_slugs:
+                seen.add(slug)
+                yield slug
 
-                next_control = page.get_by_text(re.compile(r"^Next"), exact=False).last
-                try:
-                    if await next_control.count() == 0:
-                        return
-                    await next_control.click(timeout=3000)
-                    await page.wait_for_timeout(1500)
-                except Exception:
-                    return
-        finally:
-            await page.close()
-
-    async def _extract_company_slugs(self, page) -> set[str]:
-        hrefs = await page.locator('a[href^="/en/company/"]').evaluate_all(
-            "els => els.map(e => e.getAttribute('href'))"
-        )
+    @staticmethod
+    def _extract_company_slugs(html: str) -> set[str]:
         slugs = set()
-        for href in hrefs:
-            slug = href.split("#")[0].removeprefix("/en/company/").strip("/")
+        for href in re.findall(r'href="(/en/company/[^"#]+)"', html):
+            slug = href.removeprefix("/en/company/").strip("/")
             if slug and slug != "add":
                 slugs.add(slug)
         return slugs
 
-    async def _fetch_company(self, context, company_slug: str, rubric_label: str) -> dict | None:
-        await self.limiter.wait()
-        page = await context.new_page()
-        try:
-            url = f"{self.base_url}/en/company/{company_slug}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=_PAGE_TIMEOUT_MS)
-            await page.wait_for_timeout(1500)
-            html = await page.content()
-        finally:
-            await page.close()
+    async def _fetch_company(self, client: httpx.AsyncClient, company_slug: str, rubric_label: str) -> dict | None:
+        """Plain HTTP -- no browser.
+
+        Re-measured 2026-08-20: the company detail page is server-rendered. Both
+        the JSON-LD block and the #contacts card are present in the raw HTML, so
+        the Playwright round-trip this used to do (launch a tab, render ads and
+        analytics, wait 1.5s, read the DOM) bought nothing. Dropping it removes
+        the overwhelming majority of browser work in this crawl -- detail pages
+        outnumber listing pages by a large factor -- which is what made the
+        browser OOM under any concurrency. The listing walk no longer needs one
+        either -- see the module docstring.
+        """
+        url = f"{self.base_url}/en/company/{company_slug}"
+        resp = await request_with_retry(client, url, limiter=self.limiter)
+        if resp.status_code != 200:
+            return None
+        html = resp.text
 
         business = extract_local_business(html)
         if business is None:

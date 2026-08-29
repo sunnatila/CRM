@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, clearToken, getToken, setToken } from "@/lib/api";
+import { disconnect } from "@/lib/ws";
 import type { User } from "@/lib/types";
 
 interface AuthContextValue {
@@ -46,6 +47,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   function logout() {
     clearToken();
+    // Logout is SPA-only (no reload), so the shared socket would otherwise stay
+    // open and authenticated as the previous user -- on a shared workstation the
+    // next person to log in would receive their personal notifications.
+    disconnect();
     setUser(null);
   }
 

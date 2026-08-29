@@ -7,24 +7,44 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_session
 from app.core.deps import get_current_user, require_admin
 from app.core.security import hash_password
-from app.models.permission_request import STATUS_PENDING, PermissionRequest
-from app.models.review import FIELD_WEBSITE, CompanyReview
+from app.models.company import Company
+from app.models.lead import STATUS_APPROVED, STATUS_REJECTED, LeadState
 from app.models.user import User
 from app.schemas.auth import CreateOperatorRequest, UserOut
-from app.schemas.review import OperatorStatsOut, OverviewStatsOut
+from app.schemas.stats import OperatorStatsOut, OverviewStatsOut
 
 router = APIRouter(tags=["operators"])
 
 
-async def _counts_for(session: AsyncSession, user_id: int) -> tuple[int, int, int]:
+def _period_starts() -> tuple[datetime, datetime]:
     now = datetime.now(UTC)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = today_start - timedelta(days=now.weekday())
+    return today_start, today_start - timedelta(days=now.weekday())
 
-    base = select(func.count()).where(CompanyReview.field == FIELD_WEBSITE, CompanyReview.filled_by_id == user_id)
+
+async def _counts_for(session: AsyncSession, user_id: int) -> tuple[int, int, int]:
+    """Finished leads credited to this operator.
+
+    Counted off `lead_states` -- the same source the profile's "So'nggi
+    yakunlanganlar" table reads via `/leads?actor=me` -- so the number and the
+    list under it can never disagree. They did: the counter used to require a
+    `finish` *event* authored by the operator, while the table asked who last
+    acted on the lead. Leads carried over by the v1->v2 migration have
+    `type='migration'` with a NULL actor, so they appeared in the table while the
+    counter above them read 0, and an operator saw their own finished work
+    reported as nothing.
+
+    v1 counted filled review rows, which would count drafts too; that is still
+    excluded -- only a lead that actually reached approved/rejected counts.
+    """
+    today_start, week_start = _period_starts()
+    base = select(func.count()).where(
+        LeadState.status.in_([STATUS_APPROVED, STATUS_REJECTED]),
+        LeadState.last_actor_id == user_id,
+    )
     total = (await session.execute(base)).scalar_one()
-    today = (await session.execute(base.where(CompanyReview.filled_at >= today_start))).scalar_one()
-    week = (await session.execute(base.where(CompanyReview.filled_at >= week_start))).scalar_one()
+    today = (await session.execute(base.where(LeadState.last_activity_at >= today_start))).scalar_one()
+    week = (await session.execute(base.where(LeadState.last_activity_at >= week_start))).scalar_one()
     return today, week, total
 
 
@@ -116,15 +136,24 @@ async def get_overview_stats(
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> OverviewStatsOut:
-    now = datetime.now(UTC)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = today_start - timedelta(days=now.weekday())
+    today_start, week_start = _period_starts()
 
-    base = select(func.count()).where(CompanyReview.field == FIELD_WEBSITE)
-    today_filled = (await session.execute(base.where(CompanyReview.filled_at >= today_start))).scalar_one()
-    week_filled = (await session.execute(base.where(CompanyReview.filled_at >= week_start))).scalar_one()
-    pending_requests = (
-        await session.execute(select(func.count()).where(PermissionRequest.status == STATUS_PENDING))
+    # Same source as `_counts_for`, so the team totals here and the per-operator
+    # numbers on the scoreboard below can never tell different stories.
+    finished = select(func.count()).where(LeadState.status.in_([STATUS_APPROVED, STATUS_REJECTED]))
+    today_filled = (await session.execute(finished.where(LeadState.last_activity_at >= today_start))).scalar_one()
+    week_filled = (await session.execute(finished.where(LeadState.last_activity_at >= week_start))).scalar_one()
+    # Deliberately NOT a "waiting" count. The dashboard's status-distribution row
+    # already shows waiting, computed from the *effective* status; this endpoint
+    # counted the literal column, so the same word showed two different numbers a
+    # few pixels apart and an admin who noticed stopped trusting the whole page.
+    # One number, one definition, one owner -- and this slot now answers what the
+    # distribution row cannot: how much of the catalog has been dealt with at all.
+    total_companies = (await session.execute(select(func.count()).select_from(Company))).scalar_one()
+    finished_leads = (
+        await session.execute(
+            select(func.count()).where(LeadState.status.in_([STATUS_APPROVED, STATUS_REJECTED]))
+        )
     ).scalar_one()
     active_operators = (
         await session.execute(select(func.count()).where(User.role == "operator", User.is_active))
@@ -133,6 +162,7 @@ async def get_overview_stats(
     return OverviewStatsOut(
         today_filled=today_filled,
         week_filled=week_filled,
-        pending_requests=pending_requests,
+        total_companies=total_companies,
+        finished_leads=finished_leads,
         active_operators=active_operators,
     )

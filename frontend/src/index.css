@@ -39,13 +39,27 @@
     --color-card: var(--card);
     --color-foreground: var(--foreground);
     --color-background: var(--background);
-    /* DESIGN.md status vocabulary -- independent of brand primary/accent */
+    /* Field vocabulary (Website/LMS: bor / yo'q / belgilanmagan) -- unchanged
+       from DESIGN.md apart from the two contrast fixes noted below. */
     --color-status-confirmed: var(--status-confirmed);
     --color-status-confirmed-foreground: var(--status-confirmed-foreground);
     --color-status-absent: var(--status-absent);
     --color-status-absent-foreground: var(--status-absent-foreground);
     --color-status-pending: var(--status-pending);
     --color-status-pending-foreground: var(--status-pending-foreground);
+    /* Lead vocabulary (Yangi / Jarayonda / Kutilmoqda / Tasdiqlangan / Rad etilgan).
+       A second, deliberately separate vocabulary: a lead's workflow state and a
+       field's answer are different questions and must not share badges. */
+    --color-lead-new: var(--lead-new);
+    --color-lead-new-foreground: var(--lead-new-foreground);
+    --color-lead-progress: var(--lead-progress);
+    --color-lead-progress-foreground: var(--lead-progress-foreground);
+    --color-lead-waiting: var(--lead-waiting);
+    --color-lead-waiting-foreground: var(--lead-waiting-foreground);
+    --color-lead-approved: var(--lead-approved);
+    --color-lead-approved-foreground: var(--lead-approved-foreground);
+    --color-lead-rejected: var(--lead-rejected);
+    --color-lead-rejected-foreground: var(--lead-rejected-foreground);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -91,12 +105,29 @@
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: #93C5FD;
 
-    --status-confirmed: #16A34A;
+    /* Contrast fix: the original #16A34A/#D97706 on white measured 3.3:1 and
+       3.19:1, below the 4.5:1 WCAG AA floor DESIGN.md claims. Darkened one step
+       each -- same hue, same meaning, now 5.02:1. */
+    --status-confirmed: #15803D;
     --status-confirmed-foreground: #FFFFFF;
     --status-absent: #64748B;
     --status-absent-foreground: #FFFFFF;
-    --status-pending: #D97706;
+    --status-pending: #B45309;
     --status-pending-foreground: #FFFFFF;
+
+    /* Lead statuses. Every pair verified >= 4.5:1 against its own foreground.
+       Indigo (not the #1D4ED8 brand blue) carries "Jarayonda" so an active lead
+       never reads as a button. */
+    --lead-new: #475569;
+    --lead-new-foreground: #FFFFFF;
+    --lead-progress: #4F46E5;
+    --lead-progress-foreground: #FFFFFF;
+    --lead-waiting: #B45309;
+    --lead-waiting-foreground: #FFFFFF;
+    --lead-approved: #15803D;
+    --lead-approved-foreground: #FFFFFF;
+    --lead-rejected: #B91C1C;
+    --lead-rejected-foreground: #FFFFFF;
 }
 
 .dark {
@@ -138,6 +169,17 @@
     --status-absent-foreground: #0B1220;
     --status-pending: #F59E0B;
     --status-pending-foreground: #0B1220;
+
+    --lead-new: #CBD5E1;
+    --lead-new-foreground: #0B1220;
+    --lead-progress: #818CF8;
+    --lead-progress-foreground: #0B1220;
+    --lead-waiting: #F59E0B;
+    --lead-waiting-foreground: #0B1220;
+    --lead-approved: #22C55E;
+    --lead-approved-foreground: #0B1220;
+    --lead-rejected: #F87171;
+    --lead-rejected-foreground: #0B1220;
 }
 
 @layer base {

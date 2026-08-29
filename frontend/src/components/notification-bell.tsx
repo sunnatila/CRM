@@ -1,34 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { api, getToken, wsUrl } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import type { NotificationItem, Role } from "@/lib/types";
+import { api } from "@/lib/api";
+import { onReconnect, subscribe } from "@/lib/ws";
+import type { NotificationItem } from "@/lib/types";
 
-const RECONNECT_DELAY_MS = 3_000;
-
-function resolveLink(link: string | null, role: Role): string | null {
+/** v2 links are all `lead:{company_id}`. The v1 prefixes still sit in the
+ *  notifications table, so they are mapped where they can be and ignored where
+ *  the destination no longer exists -- a historic row must not make a click
+ *  throw or land on a dead route. */
+function resolveLink(link: string | null): string | null {
   if (!link) return null;
-  if (link.startsWith("review:")) {
-    const [, companyId] = link.split(":");
-    return `/review/${companyId}`;
-  }
-  if (link.startsWith("permission-request:")) {
-    return role === "admin" ? "/admin/permission-requests" : "/my-requests?type=permission";
-  }
-  if (link.startsWith("claim-request:")) {
-    return role === "admin" ? "/admin/claim-requests" : "/my-requests?type=claim";
-  }
+  const [prefix, id] = link.split(":");
+  if (prefix === "lead" || prefix === "review") return `/lead/${id}`;
   return null;
 }
 
 export function NotificationBell() {
-  const { user } = useAuth();
   const [items, setItems] = useState<NotificationItem[]>([]);
   const navigate = useNavigate();
-  const socketRef = useRef<WebSocket | null>(null);
 
   async function load() {
     try {
@@ -41,31 +33,26 @@ export function NotificationBell() {
 
   useEffect(() => {
     load();
-
-    let cancelled = false;
-    let reconnectTimer: ReturnType<typeof setTimeout>;
-
-    function connect() {
-      const token = getToken();
-      if (!token || cancelled) return;
-
-      const socket = new WebSocket(wsUrl(`/ws/notifications?token=${encodeURIComponent(token)}`));
-      socketRef.current = socket;
-
-      socket.onmessage = (event) => {
-        const notification = JSON.parse(event.data) as NotificationItem;
-        setItems((prev) => [notification, ...prev]);
-      };
-      socket.onclose = () => {
-        if (!cancelled) reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
-      };
-    }
-
-    connect();
+    // One shared socket for the whole tab (lib/ws.ts). The bell used to open a
+    // SECOND one of its own, doubling every connection the server holds and
+    // everything it writes per broadcast. It also pushed EVERY frame into the
+    // list without checking `kind`, so the {kind:"lead"} status broadcasts --
+    // which fire on every action by every operator -- showed up as bogus
+    // notifications for everyone.
+    const unsubscribe = subscribe((frame) => {
+      if (frame.kind !== "notification") return;
+      const incoming = frame as unknown as NotificationItem;
+      setItems((prev) =>
+        // Dedupe by id: sharing the socket means a frame can be delivered more
+        // than once across reconnects, and a duplicated bell item is visible.
+        prev.some((n) => n.id === incoming.id) ? prev : [incoming, ...prev],
+      );
+    });
+    // A socket that was down missed notifications outright -- re-read on return.
+    const unsubscribeResync = onReconnect(load);
     return () => {
-      cancelled = true;
-      clearTimeout(reconnectTimer);
-      socketRef.current?.close();
+      unsubscribe();
+      unsubscribeResync();
     };
   }, []);
 
@@ -76,7 +63,7 @@ export function NotificationBell() {
       await api.post(`/notifications/${n.id}/read`);
       setItems((prev) => prev.map((i) => (i.id === n.id ? { ...i, read: true } : i)));
     }
-    const target = user && resolveLink(n.link, user.role);
+    const target = resolveLink(n.link);
     if (target) navigate(target);
   }
 

@@ -21,6 +21,16 @@ export function setToken(token: string): void {
 
 export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
+  // Buffered lead drafts are keyed by user id, but these machines are shared:
+  // leaving one operator's unsent call notes in storage for whoever logs in
+  // next is both a privacy leak and a source of confusing "restored" banners.
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("operatordesk_draft:")) localStorage.removeItem(key);
+    }
+  } catch {
+    /* private mode -- nothing was stored to begin with */
+  }
 }
 
 /** Builds a ws(s):// URL for a path under the API base, e.g. wsUrl("/ws/notifications").

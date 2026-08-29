@@ -1,5 +1,11 @@
 services:
   backend:
+    # Without this, an OOM kill (exit 137 -- has happened: this host's 1.6GB is
+    # shared with another project's containers) leaves the whole stack dead
+    # until someone notices and runs `docker compose up` by hand. Cheap to
+    # recover from now that scraping resumes at rubric granularity (AD-16)
+    # instead of restarting the whole catalog.
+    restart: unless-stopped
     build:
       context: ./backend
       network: host
@@ -11,11 +17,22 @@ services:
       - 1.1.1.1
     ports:
       - "8001:8000"
+    volumes:
+      # Uploaded avatars live on the container filesystem, so rebuilding the
+      # image used to delete them. Named volume keeps them across rebuilds.
+      # (The architecture spine flags object storage as the real fix if this
+      # ever runs on more than one machine.)
+      - avatars:/app/app/static/avatars
+      # Holds the auto-generated SECRET_KEY when none is configured. On a volume
+      # so it survives rebuilds -- regenerating it each start would invalidate
+      # every session and log everyone out on deploy.
+      - appdata:/app/var
     depends_on:
       postgres:
         condition: service_healthy
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       network: host
@@ -25,6 +42,7 @@ services:
       - backend
 
   postgres:
+    restart: unless-stopped
     image: postgres:16
     environment:
       POSTGRES_USER: parsing
@@ -42,3 +60,5 @@ services:
 
 volumes:
   pgdata:
+  avatars:
+  appdata:

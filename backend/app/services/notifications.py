@@ -16,6 +16,7 @@ async def notify(session: AsyncSession, *, user_id: int, message: str, link: str
     await manager.send_to_user(
         user_id,
         {
+            "kind": "notification",
             "id": notification.id,
             "message": notification.message,
             "link": notification.link,

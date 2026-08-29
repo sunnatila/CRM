@@ -56,7 +56,13 @@ class GoldenPagesAdapter(SourceAdapter):
             seen_company_ids: set[str] = set()
 
             for rubric_id in rubrics:
+                # AD-16: skip rubrics already walked end to end. At goldenpages'
+                # deliberately slow delay, re-enumerating them costs hours.
+                if rubric_id in self.done_rubrics:
+                    continue
+                seen_here = 0
                 async for company_id in self._iter_rubric_company_ids(client, rubric_id):
+                    seen_here += 1
                     if company_id in seen_company_ids or company_id in skip_ids:
                         continue
                     seen_company_ids.add(company_id)
@@ -71,6 +77,12 @@ class GoldenPagesAdapter(SourceAdapter):
                     if payload is None:
                         continue
                     yield RawRecord(source_id=company_id, payload=payload)
+
+                # Reached only on a full walk of the rubric -- if the consumer
+                # broke out early (e.g. `limit`), this never runs, so a partial
+                # walk is not recorded as complete.
+                if self.on_rubric_complete is not None:
+                    await self.on_rubric_complete(rubric_id, seen_here)
 
     def normalize(self, raw: RawRecord) -> CompanyIn:
         p = raw.payload
