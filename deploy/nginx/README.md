@@ -58,6 +58,17 @@ Tested against the running stack with a self-signed certificate before shipping:
 | **gzip** | 200,831 → 44,605 bytes (**77.8%** smaller) |
 | Real browser | login + `wss://` connected, no console errors |
 
+### nginx version
+
+HTTP/2 is switched on via `listen 443 ssl http2;`, **not** the standalone
+`http2 on;` directive. The latter only exists in nginx >= 1.25.1; on anything
+older it is a hard `unknown directive "http2"` error and nginx refuses to start.
+The `listen ... http2` form works on every version (newer builds log a
+deprecation warning and carry on).
+
+Config-tested on nginx **1.24.0**, **1.26.3** and **1.31.4**; HTTP/2 negotiation
+and the WebSocket `101` confirmed on 1.24 specifically.
+
 Note: WebSocket is negotiated over HTTP/1.1 even though the site serves HTTP/2 —
 that is normal, browsers open the socket on its own connection. Testing it with
 `curl` needs `--http1.1`, otherwise curl tries the upgrade over h2 and gets a 404.

@@ -1,14 +1,17 @@
+import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.admin.setup import setup_admin
 from app.api.routes import auth, companies, leads, notifications, operators, scrapes, ws
 from app.core.config import get_settings
+from app.models.scrape_run import ScrapeRun
 from app.services.leads import LeadError
 from app.core.db import async_session
 from app.core.security import hash_password
@@ -32,9 +35,41 @@ async def _bootstrap_admin() -> None:
         await session.commit()
 
 
+async def _reap_orphaned_scrape_runs() -> None:
+    """Close out runs left "running" by a process that is no longer alive.
+
+    A scrape lives as an asyncio task in THIS process, tracked in an in-memory
+    dict -- so immediately after startup, by definition, nothing is running. Any
+    row still marked `running` belongs to a previous process that was killed
+    (container rebuild, OOM, `compose down`), where no Python handler could
+    possibly have run to record the ending.
+
+    Without this the rows lie forever: the admin panel shows a scrape "running"
+    for days, `POST /scrapes/{source}/stop` 404s because the task registry is
+    empty, and the only fix is a manual UPDATE. Reaping them at boot is the one
+    moment we can be certain the claim is false.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            update(ScrapeRun)
+            .where(ScrapeRun.status == "running")
+            .values(
+                status="stopped",
+                finished_at=datetime.now(UTC),
+                error_message="Jarayon to'xtatildi (server qayta ishga tushdi).",
+            )
+        )
+        await session.commit()
+        if result.rowcount:
+            logging.getLogger(__name__).warning(
+                "reaped %d scrape run(s) left 'running' by a previous process", result.rowcount
+            )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await _bootstrap_admin()
+    await _reap_orphaned_scrape_runs()
     yield
 
 
