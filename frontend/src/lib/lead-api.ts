@@ -68,3 +68,22 @@ export const assignLead = (id: number, operatorId: number, note: string) =>
 /** Statuses a click should try to claim. Finished leads open read-only instead;
  *  reopening one is a deliberate, note-bearing action taken on the lead page. */
 export const CLAIMABLE: LeadStatus[] = ["new", "waiting"];
+
+/** The category list is 3,448 entries / ~200 KB and changes only when a scrape
+ *  adds a new one. It was refetched on every mount of the queue, so navigating
+ *  back and forth re-downloaded it every time. Cached for the session; a reload
+ *  is what refreshes it, which is the right cadence for data this static. */
+let categoriesCache: Promise<string[]> | null = null;
+
+export function fetchCategories(): Promise<string[]> {
+  if (!categoriesCache) {
+    categoriesCache = api
+      .get<string[]>("/leads/categories")
+      .then((r) => r.data)
+      .catch((err) => {
+        categoriesCache = null; // a failed fetch must not be cached forever
+        throw err;
+      });
+  }
+  return categoriesCache;
+}

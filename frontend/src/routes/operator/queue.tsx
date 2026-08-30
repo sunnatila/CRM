@@ -10,7 +10,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { formatPhone } from "@/lib/format";
-import { fetchLeads } from "@/lib/lead-api";
+import { ALL_CATEGORIES, CategoryPicker } from "@/components/category-picker";
+import { fetchCategories, fetchLeads } from "@/lib/lead-api";
 import { useLeadEvents } from "@/lib/use-lead-events";
 import { onReconnect } from "@/lib/ws";
 import { useAuth } from "@/lib/auth-context";
@@ -18,7 +19,6 @@ import { cn } from "@/lib/utils";
 import type { LeadList, QueueTab } from "@/lib/types";
 
 const PAGE_SIZE = 20;
-const ALL_CATEGORIES = "__all__";
 const ALL_OPERATORS = "__all__";
 
 interface TabDef {
@@ -68,6 +68,7 @@ export function QueuePage() {
   const [actor, setActor] = useState(ALL_OPERATORS);
   const [operators, setOperators] = useState<{ id: number; full_name: string }[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [data, setData] = useState<LeadList | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -92,7 +93,14 @@ export function QueuePage() {
   }, [tab, q, category, actor, page]);
 
   useEffect(() => {
-    api.get<string[]>("/leads/categories").then((r) => setCategories(r.data));
+    let alive = true;
+    fetchCategories()
+      .then((c) => alive && setCategories(c))
+      .catch(() => alive && setCategories([]))
+      .finally(() => alive && setCategoriesLoading(false));
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // Admin-only: the operator list backing the "whose work?" filter.
@@ -173,19 +181,12 @@ export function QueuePage() {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <Select value={category} onValueChange={setCategory}>
-            <SelectTrigger className="w-56">
-              <SelectValue placeholder="Kategoriya" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_CATEGORIES}>Barcha kategoriyalar</SelectItem>
-              {categories.map((c) => (
-                <SelectItem key={c} value={c}>
-                  {c}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <CategoryPicker
+            value={category}
+            options={categories}
+            onChange={setCategory}
+            loading={categoriesLoading}
+          />
           {isAdmin && (
             <Select value={actor} onValueChange={setActor}>
               <SelectTrigger className="w-44">

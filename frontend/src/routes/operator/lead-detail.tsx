@@ -13,6 +13,7 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/lib/auth-context";
+import { onReconnect, subscribe } from "@/lib/ws";
 import { splitPhones } from "@/lib/format";
 import {
   commentLead,
@@ -56,6 +57,11 @@ export function LeadDetailPage() {
   const [restored, setRestored] = useState(false);
   /** Set when the lead could not be fetched for a reason that is not "gone". */
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** Someone else claimed it while we had it open. */
+  const [takenByOther, setTakenByOther] = useState(false);
+  /** True once the lead has loaded at least once, so a later 404 can be told
+   *  apart from a first-load 404. */
+  const hadLeadRef = useRef(false);
 
   // Set while a guarded navigation is being resolved, so the blocker does not
   // re-fire on the programmatic navigate that follows the handover.
@@ -81,7 +87,9 @@ export function LeadDetailPage() {
     try {
       const next = await fetchLead(companyId!);
       setLead(next);
+      hadLeadRef.current = true;
       setLoadError(null);
+      setTakenByOther(false);
 
       // Prefer a buffered draft over the server copy: it only exists when a
       // save had not landed, so it is strictly newer than what the server holds.
@@ -115,6 +123,16 @@ export function LeadDetailPage() {
       // runs after every action, one blip after a successful pause told the
       // operator the lead could not be opened, from a page that was fine.
       if (detail?.code === "not_found") {
+        // Two operators reading the same lead is normal, and one of them is
+        // going to lose. The server answers 404 for someone else's in-progress
+        // lead by design (FR-4: no probing for leads you may not see) -- but if
+        // we already had it open, that is not "you should not be here", it is
+        // "somebody just took it". Teleporting them to the queue mid-read
+        // throws away their place for no reason; say what happened instead.
+        if (hadLeadRef.current) {
+          setTakenByOther(true);
+          return;
+        }
         toast.error(detail.message ?? "Bu leadni ochib bo'lmadi.");
         navigate("/queue", { replace: true });
         return;
@@ -125,8 +143,28 @@ export function LeadDetailPage() {
 
   useEffect(() => {
     setLead(null);
+    hadLeadRef.current = false;
+    setTakenByOther(false);
     load();
   }, [load]);
+
+  // Live updates for THIS lead. Two operators reading the same lead is the
+  // normal case, not an edge case: without this the one who did not click first
+  // sits looking at a stale "Ishni boshlash" button and only discovers the lead
+  // is gone by pressing it. The claim itself is already race-safe server-side
+  // (an atomic conditional upsert; the loser gets 409 held_by_other) -- this is
+  // about not letting the screen lie in the seconds before that click.
+  useEffect(() => {
+    const id = Number(companyId);
+    const off = subscribe((frame) => {
+      if (frame.kind === "lead" && frame.company_id === id) load();
+    });
+    const offResync = onReconnect(load);
+    return () => {
+      off();
+      offResync();
+    };
+  }, [companyId, load]);
 
   const isMine = lead?.status === "in_progress" && lead.assignee_id === user?.id;
   const can = (action: LeadAction) => lead?.available_actions.includes(action) ?? false;
@@ -340,14 +378,19 @@ export function LeadDetailPage() {
 
   // Starting another lead from here goes through the same shared flow the queue
   // uses, so the handover rule has exactly one implementation.
-  const startFlow = useStartLead((id) => {
-    if (String(id) === companyId) {
-      load(); // claimed the lead we are already looking at -- just re-render it
-      return;
-    }
-    leavingRef.current = true;
-    navigate(`/lead/${id}`);
-  });
+  const startFlow = useStartLead(
+    (id) => {
+      if (String(id) === companyId) {
+        load(); // claimed the lead we are already looking at -- just re-render it
+        return;
+      }
+      leavingRef.current = true;
+      navigate(`/lead/${id}`);
+    },
+    // Lost the race: reload so the page immediately shows who holds it now,
+    // instead of leaving a button that will only ever 409 again.
+    load,
+  );
 
   // ------------------------------------------------------------------ actions
   async function run(fn: () => Promise<unknown>, successMessage?: string) {
@@ -381,6 +424,31 @@ export function LeadDetailPage() {
 
   function leaveToQueue() {
     navigate("/queue");
+  }
+
+  // Claimed out from under us. `lead` still holds the copy we were reading, so
+  // the company details stay on screen -- the operator keeps their place and is
+  // simply told the work is no longer available, instead of being teleported to
+  // the queue mid-read by a 404 that only means "not yours any more".
+  if (takenByOther) {
+    return (
+      <AppShell title={lead?.name ?? "Lead"}>
+        <div className="mx-auto flex max-w-3xl flex-col items-start gap-3 py-10">
+          <p className="text-[15px] font-semibold">Bu leadni boshqa operator oldi.</p>
+          <p className="text-muted-foreground text-[13.5px]">
+            Siz o'qib turgan paytda kimdir ishni boshladi. Endi u sizga ochiq emas.
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={leaveToQueue}>
+              Ro'yxatga qaytish
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void load()}>
+              Qayta tekshirish
+            </Button>
+          </div>
+        </div>
+      </AppShell>
+    );
   }
 
   if (!lead) {
