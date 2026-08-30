@@ -1,10 +1,5 @@
 services:
   backend:
-    # Without this, an OOM kill (exit 137 -- has happened: this host's 1.6GB is
-    # shared with another project's containers) leaves the whole stack dead
-    # until someone notices and runs `docker compose up` by hand. Cheap to
-    # recover from now that scraping resumes at rubric granularity (AD-16)
-    # instead of restarting the whole catalog.
     restart: unless-stopped
     build:
       context: ./backend
@@ -18,14 +13,7 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      # Uploaded avatars live on the container filesystem, so rebuilding the
-      # image used to delete them. Named volume keeps them across rebuilds.
-      # (The architecture spine flags object storage as the real fix if this
-      # ever runs on more than one machine.)
       - avatars:/app/app/static/avatars
-      # Holds the auto-generated SECRET_KEY when none is configured. On a volume
-      # so it survives rebuilds -- regenerating it each start would invalidate
-      # every session and log everyone out on deploy.
       - appdata:/app/var
     depends_on:
       postgres:
@@ -37,10 +25,6 @@ services:
       context: ./frontend
       network: host
     ports:
-      # Loopback only: on the server, host nginx (deploy/nginx/crm.nextin.uz.conf)
-      # is the sole public listener and forwards here. Publishing on 0.0.0.0
-      # would leave the app reachable on :3000 over plain HTTP, bypassing TLS.
-      # Local development is unaffected -- localhost:3000 still works.
       - "127.0.0.1:3000:80"
     depends_on:
       - backend
