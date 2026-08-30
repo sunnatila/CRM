@@ -128,11 +128,13 @@ WARN
 if [ "${ASSUME_YES:-}" = "1" ]; then
   answer=ha
   echo "ASSUME_YES=1 -- tasdiqlash so'ralmadi."
-elif exec 3</dev/tty 2>/dev/null; then
-  read -r -p "Davom etamizmi? (ha/yo'q) " answer <&3 || answer=""
+elif { exec 3</dev/tty; } 2>/dev/null; then
+  printf "Davom etamizmi? (ha/yo'q) "
+  read -r answer <&3 || answer=""
   exec 3<&-
 else
-  read -r -p "Davom etamizmi? (ha/yo'q) " answer || answer=""
+  printf "Davom etamizmi? (ha/yo'q) "
+  read -r answer || answer=""
 fi
 [ "$answer" = "ha" ] || { echo "Bekor qilindi."; exit 1; }
 

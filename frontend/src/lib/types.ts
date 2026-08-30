@@ -158,3 +158,13 @@ export interface LeadError {
   active_company_name?: string;
   missing?: string[];
 }
+
+/** A category tag plus how many companies carry it.
+ *
+ *  The count is what makes 3.6k categories browsable: ordered by size, the
+ *  handful that actually hold the database surface immediately, instead of the
+ *  operator having to already know a name before they can type it. */
+export interface CategoryOption {
+  name: string;
+  count: number;
+}

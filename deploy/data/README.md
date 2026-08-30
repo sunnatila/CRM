@@ -1,5 +1,33 @@
 # Bazani serverga ko'chirish
 
+## Tez yo'l (tavsiya etiladi)
+
+Laptopdan **bitta buyruq**. Oraliq fayl ham, `scp` ham kerak emas — `pg_dump`
+quvur orqali to'g'ridan-to'g'ri serverning bazasiga oqadi:
+
+```bash
+bash deploy/data/push_to_server.sh
+```
+
+Boshqa server uchun: `bash deploy/data/push_to_server.sh root@1.2.3.4`
+
+Nima qiladi:
+1. Bitta SSH ulanish ochadi (`ControlPersist`) — parol bir marta so'raladi
+2. Lokal va server sxema versiyalarini solishtiradi, mos kelmasa **to'xtaydi**
+3. Tozalanadigan jadvallarni serverning tashqi kalit grafigidan hisoblaydi
+4. Nima bo'lishini ko'rsatib, `ha` deb tasdiqlashni so'raydi (`ASSUME_YES=1` — so'ramaydi)
+5. `gzip` bilan siqib oqizadi (5.9M → 1.1M), serverda bitta tranzaksiyada yozadi
+6. Backendni qayta ishga tushiradi va natijani ko'rsatadi
+
+Lokal sinovda to'liq oqim **5 soniya**.
+
+Quyidagi qo'lda usul — SSH orqali oqizish ishlamasa yoki snapshotni saqlab
+qo'ymoqchi bo'lsangiz kerak bo'ladi.
+
+---
+
+## Qo'lda yo'l (fayl orqali)
+
 Lokal mashinada yig'ilgan kompaniyalarni serverga o'tkazadi. **Barcha leadlar
 "Yangi" holatida** bo'ladi — jarayondagi, kutilmoqda, tasdiqlangan yoki rad
 etilganlari ham. Serverdagi foydalanuvchilar va ularning parollari tegilmaydi.

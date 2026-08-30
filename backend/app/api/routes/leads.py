@@ -8,7 +8,7 @@ Replaces `/api/reviews`, `/api/claims`, `/api/claim-requests` and
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import any_, func, select
+from sqlalchemy import any_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
@@ -28,6 +28,7 @@ from app.models.review import FIELD_LMS, FIELD_WEBSITE, REVIEW_FIELDS, CompanyRe
 from app.models.user import User
 from app.schemas.lead import (
     AssignIn,
+    CategoryOut,
     DraftIn,
     FinishIn,
     LeadAttentionItemOut,
@@ -209,19 +210,35 @@ async def _user_names_for(session: AsyncSession, ids: set[int | None]) -> dict[i
     return {i: name for i, name in rows}
 
 
-@router.get("/categories", response_model=list[str])
+@router.get("/categories", response_model=list[CategoryOut])
 async def list_categories(
     _user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> list[str]:
-    rows = (await session.execute(select(Company.category).where(Company.category.isnot(None)))).scalars().all()
-    tags: set[str] = set()
-    for raw in rows:
-        for tag in raw.split("; "):
-            tag = tag.strip()
-            if tag:
-                tags.add(tag)
-    return sorted(tags)
+) -> list[CategoryOut]:
+    """Every category, with its company count, biggest first.
+
+    Previously this pulled all 12k `category` strings into Python and split them
+    there, returning bare names in alphabetical order. Two problems: the work
+    grows with the table, and -- worse -- an alphabetical list of 3.6k tags is
+    not something a person can browse. It opens on "3D печать" and the
+    categories that actually hold the database ("Завод в Узбекистане", 1008
+    companies) are thousands of rows down, reachable only by typing a name you
+    would have to already know.
+
+    So the split, the count and the ordering all happen in SQL, and the count
+    travels to the client (AD-17).
+    """
+    tag = func.btrim(func.unnest(func.string_to_array(Company.category, "; "))).label("tag")
+    inner = select(tag).where(Company.category.isnot(None)).subquery()
+    rows = (
+        await session.execute(
+            select(inner.c.tag, func.count().label("n"))
+            .where(inner.c.tag != "")
+            .group_by(inner.c.tag)
+            .order_by(desc("n"), inner.c.tag)
+        )
+    ).all()
+    return [CategoryOut(name=name, count=n) for name, n in rows]
 
 
 @router.get("/attention", response_model=list[LeadAttentionItemOut])

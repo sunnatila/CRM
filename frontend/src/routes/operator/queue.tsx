@@ -16,7 +16,7 @@ import { useLeadEvents } from "@/lib/use-lead-events";
 import { onReconnect } from "@/lib/ws";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
-import type { LeadList, QueueTab } from "@/lib/types";
+import type { CategoryOption, LeadList, QueueTab } from "@/lib/types";
 
 const PAGE_SIZE = 20;
 const ALL_OPERATORS = "__all__";
@@ -67,7 +67,7 @@ export function QueuePage() {
   const [category, setCategory] = useState(ALL_CATEGORIES);
   const [actor, setActor] = useState(ALL_OPERATORS);
   const [operators, setOperators] = useState<{ id: number; full_name: string }[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [data, setData] = useState<LeadList | null>(null);

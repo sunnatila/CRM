@@ -1,5 +1,5 @@
 import { api } from "@/lib/api";
-import type { LeadDetail, LeadError, LeadList, LeadStatus, QueueTab } from "@/lib/types";
+import type { CategoryOption, LeadDetail, LeadError, LeadList, LeadStatus, QueueTab } from "@/lib/types";
 
 /** Pulls the server's `{code, message, ...}` envelope out of an axios failure.
  *
@@ -73,12 +73,12 @@ export const CLAIMABLE: LeadStatus[] = ["new", "waiting"];
  *  adds a new one. It was refetched on every mount of the queue, so navigating
  *  back and forth re-downloaded it every time. Cached for the session; a reload
  *  is what refreshes it, which is the right cadence for data this static. */
-let categoriesCache: Promise<string[]> | null = null;
+let categoriesCache: Promise<CategoryOption[]> | null = null;
 
-export function fetchCategories(): Promise<string[]> {
+export function fetchCategories(): Promise<CategoryOption[]> {
   if (!categoriesCache) {
     categoriesCache = api
-      .get<string[]>("/leads/categories")
+      .get<CategoryOption[]>("/leads/categories")
       .then((r) => r.data)
       .catch((err) => {
         categoriesCache = null; // a failed fetch must not be cached forever

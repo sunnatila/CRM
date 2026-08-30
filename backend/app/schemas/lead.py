@@ -42,6 +42,19 @@ class LeadListItemOut(BaseModel):
     last_note_at: datetime | None
 
 
+class CategoryOut(BaseModel):
+    """A category plus how many companies carry it.
+
+    The count is the whole point: 3.6k categories sorted alphabetically are
+    unbrowsable -- the operator cannot tell "Завод в Узбекистане" (1008 leads)
+    from a tag that matches three companies. Ordering by count turns the list
+    into something you can actually explore without knowing a name in advance.
+    """
+
+    name: str
+    count: int
+
+
 class LeadListOut(BaseModel):
     items: list[LeadListItemOut]
     total: int
