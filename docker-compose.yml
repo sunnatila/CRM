@@ -37,7 +37,11 @@ services:
       context: ./frontend
       network: host
     ports:
-      - "3000:80"
+      # Loopback only: on the server, host nginx (deploy/nginx/crm.nextin.uz.conf)
+      # is the sole public listener and forwards here. Publishing on 0.0.0.0
+      # would leave the app reachable on :3000 over plain HTTP, bypassing TLS.
+      # Local development is unaffected -- localhost:3000 still works.
+      - "127.0.0.1:3000:80"
     depends_on:
       - backend
 
